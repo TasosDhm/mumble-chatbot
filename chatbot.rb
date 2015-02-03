@@ -123,9 +123,8 @@ end
 	@logger.unknown("[" + @channel + "] " + "Bot" + ":" + a)
 end
 
-@agent.on_debug_message do |dm|
-	formated_message = "#{dm[0]}\n#{dm[1]}/#{dm[2]}/#{dm[3]} #{dm[4]}:#{dm[5]}"
-	@debuglogger.unknown(formated_message)
+@agent.on_debug_message do |msg|
+	@debuglogger.unknown(msg)
 end
 
 #Connect the clients to the servers
