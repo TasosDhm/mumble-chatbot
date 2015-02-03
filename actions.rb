@@ -2,7 +2,7 @@
 
 def text message
 	puts message
-	if (message.include? "http://") && !(message.include? "<img src=")
+	if ((message.include? "http://") || (message.include? "https://")) && !(message.include? "<img src=")
 		message = "<a href='#{message}'>#{message}</a>"
 	end
 	@cli.text_channel(@channel, message)
