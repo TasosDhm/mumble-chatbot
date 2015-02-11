@@ -1,19 +1,18 @@
 @database_path = 'murmur.sqlite'
 
 def text message
-	puts message
 	if ((message.include? "http://") || (message.include? "https://")) && !(message.include? "<img src=")
 		message = "<a href='#{message}'>#{message}</a>"
 	end
 	@cli.text_channel(@channel, message)
 end
 
-def action_commands actor,arguments
-	command_table = Hash.new {|h,k| h[k] = Array.new }
+def action_actions actor,arguments
+	action_table = Hash.new {|h,k| h[k] = Array.new }
 	begin
 		db = SQLite3::Database.new @database_path
-		db.execute( "SELECT name FROM chatbot_commands" ) do |row|
-		  command_table[:names] << row[0]
+		db.execute( "SELECT name FROM chatbot_commands WHERE type=?",["action"] ) do |row|
+		  	action_table[:names] << row[0]
 		end
 		rescue SQLite3::Exception => e    
 		    @cli.text_channel(@channel, "SQL exception occurred")
@@ -22,7 +21,7 @@ def action_commands actor,arguments
 			db.close if db
 	end
 	msg = ''
-	command_table[:names].each do |c|
+	action_table[:names].each do |c|
 		msg = msg + c + ', '
 	end
 	msg = msg.gsub(/,(\s{1,})$/,"")
@@ -77,6 +76,27 @@ def action_updt actor,arguments
 		ensure
 			db.close if db
 	end
+end
+
+def action_texts actor,arguments
+	text_table = Hash.new {|h,k| h[k] = Array.new }
+	begin
+		db = SQLite3::Database.new @database_path
+		db.execute( "SELECT name FROM chatbot_commands WHERE type=?",["text"] ) do |row|
+			text_table[:names] << row[0]
+		end
+		rescue SQLite3::Exception => e    
+		    @cli.text_channel(@channel, "SQL exception occurred")
+		    @cli.text_channel(@channel, e.to_s)
+		ensure
+			db.close if db
+	end
+	msg = ''
+	text_table[:names].each do |c|
+		msg = msg + c + ', '
+	end
+	msg = msg.gsub(/,(\s{1,})$/,"")
+	@cli.text_channel(@channel,msg)
 end
 
 def action_roll actor,arguments
@@ -241,4 +261,13 @@ def action_slog actor,arguments
 		@cli.text_channel(@channel, "Too many lines")
 		@logger.unknown("[" + @channel + "] " + "Bot" + ":" + "Too many lines")
 	end
+end
+
+def action_emoticons actor,arguments
+	msg = ''
+	@emoticons.each_with_index do |e,i|
+		msg = msg + e + ', '
+	end
+	msg = msg.gsub(/,(\s{1,})$/,"")
+	@cli.text_channel(@channel,msg)
 end

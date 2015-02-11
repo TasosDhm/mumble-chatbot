@@ -137,7 +137,7 @@ end
 sleep(1)
 @cli.join_channel(@channel)
 sleep(1)
-@cli.player.stream_named_pipe(mpd_fifo)
+#@cli.player.stream_named_pipe(mpd_fifo)
 sleep(1)
 
 #ethmmy-agent
