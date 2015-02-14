@@ -6,6 +6,8 @@ require 'logger'
 require 'io/console'
 require 'inifile'
 require 'ruby-mpd'
+require 'filewatcher'
+require 'mechanize'
 require './actions.rb'
 require './tools.rb'
 require './ethmmy.rb'
@@ -24,41 +26,61 @@ settings_file.each do |section,parameter,value|
 		misc_info[parameter] = value
 	end
 end
-@database_path 		= file_paths["database"]
-@murmur_ini_path	= file_paths["murmurini"]
-@chatlog_path		= file_paths["chatlog"]
-@murmurlog_path		= file_paths["murmurlog"]
-@restartbot_path	= file_paths["restartbot"]
-@debuglog_path		= file_paths["debuglog"]
-address 			= connection_info["address"]
-port				= connection_info["port"]
-botname				= connection_info["botname"]
-password 			= connection_info["password"]
-@channel 			= misc_info["channel"]
-mpd_server			= misc_info["mpdserver"]
-mpd_port			= misc_info["mpdport"]
-mpd_fifo			= misc_info["mpdfifo"]
-ethmmy_username		= misc_info["ethmmy_username"]
-ethmmy_password		= misc_info["ethmmy_password"]
+@database_path 				= file_paths["database"]
+@murmur_ini_path			= file_paths["murmurini"]
+@chatlog_path				= file_paths["chatlog"]
+@murmurlog_path				= file_paths["murmurlog"]
+@restartbot_path			= file_paths["restartbot"]
+@debuglog_path				= file_paths["debuglog"]
+@ethmmy_subscriptions_path 	= file_paths["ethmmy_subscriptions"]
+address 					= connection_info["address"]
+port						= connection_info["port"]
+@botname					= connection_info["botname"]
+password 					= connection_info["password"]
+@channel 					= misc_info["channel"]
+mpd_server					= misc_info["mpdserver"]
+mpd_port					= misc_info["mpdport"]
+mpd_fifo					= misc_info["mpdfifo"]
+ethmmy_username				= misc_info["ethmmy_username"]
+ethmmy_password				= misc_info["ethmmy_password"]
+
+spawn_file_watcher @ethmmy_subscriptions_path
 
 #Initialize global variables and objects
-@cli = Mumble::Client.new(address, port, botname, password)
-@mpd = MPD.new mpd_server, mpd_port
-@agent = EthmmyAgent::Client.new(ethmmy_username,ethmmy_password)
-@restart_signal = false
-@logger = init_logger @chatlog_path
-@debuglogger = init_logger @debuglog_path
-@command_table = Hash.new {|h,k| h[k] = Array.new}
-@usernames = {}
-@emoticons = fetch_emoticons
+@cli 									= Mumble::Client.new(address, port, @botname, password)
+@mpd 									= MPD.new mpd_server, mpd_port
+@agent 									= EthmmyAgent::Client.new(ethmmy_username,ethmmy_password)
+@restart_signal 						= false
+@logger 								= init_logger @chatlog_path
+@debuglogger 							= init_logger @debuglog_path
+@command_table 							= Hash.new {|h,k| h[k] = Array.new}
+@usernames 								= {}
+@channels								= Hash.new {|h,k| h[k] = Hash.new}
+@channel_of_user						= {}
+@ethmmy_agent_subscription_names 		= []
+@emoticons 								= fetch_emoticons
+@ethmmy_mumble_subscriptions			= fetch_ethmmy_subscriptions
+@ethmmy_cached_announcements			= Hash.new {|h,k| h[k] = Array.new}
+@ethmmy_subjects_ids					= {}
 
 #Fetch data from the database
 fetch_database
 
 #Setup callbacks
 @cli.on_user_state do |msg|
-	unless msg.name.nil?		
+	unless msg.name.nil? #nil name (which is user name) means user just changed channel
+		unless @usernames.empty?
+			@usernames.each do |s,u|
+				if u == msg.name
+					@usernames.delete(s)
+				end
+			end
+		end
 		@usernames[msg.session] = msg.name
+		@channel_of_user[@usernames[msg.session]] = @channels[msg.channel_id].name
+	else
+		@channel_of_user[@usernames[msg.session]] = @channels[msg.channel_id].name
+		shout_cached_ethmmy_announcements msg
 	end
 end
 
@@ -118,13 +140,55 @@ end
 	end
 end
 
-@agent.on_new_announcement do |a|
-	@cli.text_channel(@channel, a)
-	@logger.unknown("[" + @channel + "] " + "Bot" + ":" + a)
+@agent.on_new_announcement do |subject,body|
+	announcement = subject+body
+	@ethmmy_mumble_subscriptions.each do |user,user_subscriptions|
+		unless ((@usernames.values.include? user) && (@channel == @channel_of_user[user]))
+			if user_subscriptions.include? subject
+				cache_ethmmy_announcement user,announcement
+			end
+		end
+	end
+	@cli.text_channel(@channel, announcement)
+	@logger.unknown("[" + @channel + "] " + "Bot" + ":" + announcement)
 end
 
 @agent.on_debug_message do |msg|
+	if msg == "Disconnected"
+		@cli.text_channel(@channel,msg)
+	end
 	@debuglogger.unknown(msg)
+end
+
+on_file_change do
+	old_subscriptions = @ethmmy_mumble_subscriptions.values.flatten.uniq
+	new_subscriptions = (fetch_ethmmy_subscriptions).values.flatten.uniq
+	unsubscribe_from = old_subscriptions - new_subscriptions
+	subscribe_to = new_subscriptions - old_subscriptions
+	unsubscribe_from.each do |subject|
+		if @ethmmy_subjects_ids[subject]
+			@agent.unsubscribe_from(@ethmmy_subjects_ids[subject])
+			message = "Dropbox file changed, unsubscribed from #{subject}"
+			@cli.text_channel(@channel,message)
+			@logger.unknown("[" + @channel + "] " + "Bot" + ":" + message)
+		else
+			message = "Dropbox file changed, but #{subject} is not a valid course"
+			@cli.text_channel()
+		end
+	end
+	subscribe_to.each do |subject|
+		if @ethmmy_subjects_ids[subject]
+			@agent.subscribe_to(@ethmmy_subjects_ids[subject])
+			message = "Dropbox file changed, subscribed to #{subject}"
+			@cli.text_channel(@channel,message)
+			@logger.unknown("[" + @channel + "] " + "Bot" + ":" + message)
+		else
+			message = "Dropbox file changed, but #{subject} is not a valid course"
+			@cli.text_channel(@channel,message)
+			@logger.unknown("[" + @channel + "] " + "Bot" + ":" + message)
+		end
+	end
+	@ethmmy_mumble_subscriptions = fetch_ethmmy_subscriptions
 end
 
 #Connect the clients to the servers
@@ -134,16 +198,18 @@ end
 
 #mumble-ruby
 @cli.connect
+@channels = @cli.channels
 sleep(1)
 @cli.join_channel(@channel)
 sleep(1)
-#@cli.player.stream_named_pipe(mpd_fifo)
+@cli.player.stream_named_pipe(mpd_fifo)
 sleep(1)
 
 #ethmmy-agent
 @agent.login
-subscriptions = @agent.get_subscriptions
-@agent.spawn_announcement_poller(subscriptions)
+@ethmmy_agent_subscriptions = @agent.get_subscriptions
+@ethmmy_subjects_ids = (@agent.get_all_courses).invert
+@agent.spawn_announcement_poller(@ethmmy_agent_subscriptions)
 
 while (@restart_signal == false)
 	sleep(1)

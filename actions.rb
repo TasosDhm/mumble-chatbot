@@ -1,5 +1,3 @@
-@database_path = 'murmur.sqlite'
-
 def text message
 	if ((message.include? "http://") || (message.include? "https://")) && !(message.include? "<img src=")
 		message = "<a href='#{message}'>#{message}</a>"
